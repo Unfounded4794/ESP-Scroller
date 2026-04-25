@@ -2,6 +2,7 @@
 <project version="4">
   <component name="MicroPythonTools">
     <option name="pluginEnabled" value="true" />
-    <option name="portName" />
+    <option name="portName" value="COM3" />
+    <option name="shouldAutoDetect" value="false" />
   </component>
 </project>

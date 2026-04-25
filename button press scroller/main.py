@@ -1,196 +1,287 @@
 """
-ESP32-S3 Bluetooth Scroll Wheel
-Robust encoder handling with state table decoding and debouncing.
+ESP32-C6 Bluetooth Two-Button Scroller
+Uses BLE Mouse HID with wheel (vertical) and AC Pan (horizontal) for
+native smooth scrolling on iPadOS / macOS / Windows.
+
+Two modes:
+  MODE_AUTO  - Press button to start/stop continuous auto-scroll.
+  MODE_HOLD  - Scroll only while button is held down.
+
+Both buttons short press  -> toggle vertical / horizontal scroll axis.
+Both buttons held 3 sec   -> switch between MODE_AUTO and MODE_HOLD.
 """
 
 import time
-from machine import Pin, disable_irq, enable_irq
+from machine import Pin
 from lib.hid_keystores import NVSKeyStore
-from lib.hid_services import Keyboard
+from lib.hid_services import Mouse
 
 
-# Configuration
-ENCODER_PIN_A = 2
-ENCODER_PIN_B = 3
+# ─── Configuration ───────────────────────────────────────────────────────────
+BUTTON_A_PIN = 0              # GPIO0 (D0) - Scroll Down / Right
+BUTTON_B_PIN = 1              # GPIO1 (D1) - Scroll Up / Left
 DEVICE_NAME = "ESP32_Scroller"
-INVERT_SCROLL = True
-SCROLL_AMOUNT = 1      # Adjust between 2-5 for multi-line jumps without BLE lag
-USE_OPTION_MODIFIER = False # Set True to press Alt/Option + Arrow (jumps a paragraph on iPadOS)
-DEBOUNCE_MS = 1        # Ignore transitions within this time window
-REPORT_INTERVAL_MS = 1  # Send HID reports at this interval (accumulate scrolls)
+SCROLL_AMOUNT = 1             # Wheel ticks per scroll event (1-5)
+INVERT_SCROLL = False         # Flip scroll direction
+AUTO_SCROLL_INTERVAL_MS = 80  # ms between scroll ticks (~12/sec)
+DEBOUNCE_MS = 30              # Button debounce window
+MODE_SWITCH_HOLD_MS = 3000    # Hold both buttons this long to switch modes
+LED_PIN = 15                  # Onboard LED (XIAO ESP32-C6)
 
-# Quadrature state table: maps (old_state, new_state) -> direction
-# States: 00=0, 01=1, 11=3, 10=2
-# Valid CW sequence:  0 -> 1 -> 3 -> 2 -> 0  (returns +1)
-# Valid CCW sequence: 0 -> 2 -> 3 -> 1 -> 0  (returns -1)
-# Invalid transitions return 0 (bounce/noise)
-ENCODER_TABLE = [
-  #  new: 0   1   2   3   (old state is row index)
-         [ 0, +1, -1,  0],  # old = 0 (A=0, B=0)
-         [-1,  0,  0, +1],  # old = 1 (A=0, B=1)
-         [+1,  0,  0, -1],  # old = 2 (A=1, B=0)
-         [ 0, -1, +1,  0],  # old = 3 (A=1, B=1)
-]
+# ─── Constants ───────────────────────────────────────────────────────────────
+MODE_AUTO = 0   # Toggle auto-scroll on button press
+MODE_HOLD = 1   # Scroll while button is held
+
+AXIS_VERTICAL = 0
+AXIS_HORIZONTAL = 1
 
 
-class Encoder:
-  """Robust rotary encoder with state table decoding and debouncing."""
+# ─── Debounced Button ────────────────────────────────────────────────────────
+class Button:
+    """Polling-based debounced button with edge detection (active-low)."""
 
-  def __init__(self, pin_a, pin_b, debounce_ms=3):
-    self.pin_a = Pin(pin_a, Pin.IN, Pin.PULL_UP)
-    self.pin_b = Pin(pin_b, Pin.IN, Pin.PULL_UP)
-    self.debounce_ms = debounce_ms
+    def __init__(self, pin_num, debounce_ms=30):
+        self.pin = Pin(pin_num, Pin.IN, Pin.PULL_UP)
+        self.debounce_ms = debounce_ms
+        self._raw = not self.pin.value()  # Active-low: invert to match update() convention
+        self._last_change_ms = time.ticks_ms()
+        self.down = False       # Debounced state: True = pressed
+        self.pressed = False    # Edge: became pressed this tick
+        self.released = False   # Edge: became released this tick
 
-    # Read initial state
-    self.state = (self.pin_a.value() << 1) | self.pin_b.value()
-    self.position = 0  # Accumulated position delta
-    self.last_change_ms = time.ticks_ms()
+    def update(self):
+        """Call once per main-loop iteration to refresh state."""
+        now = time.ticks_ms()
+        raw = not self.pin.value()  # Active-low → invert
 
-    # Set up interrupts on both pins
-    self.pin_a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._irq_handler)
-    self.pin_b.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._irq_handler)
+        self.pressed = False
+        self.released = False
 
-  def _irq_handler(self, pin):
-    """IRQ handler - uses state table to determine direction."""
-    now = time.ticks_ms()
+        if raw != self._raw:
+            self._last_change_ms = now
+            self._raw = raw
 
-    # Debounce: ignore transitions too close together
-    if time.ticks_diff(now, self.last_change_ms) < self.debounce_ms:
-      return
-
-    # Read new state
-    new_state = (self.pin_a.value() << 1) | self.pin_b.value()
-
-    # Skip if no actual change (can happen due to timing)
-    if new_state == self.state:
-      return
-
-    # Look up direction from state table
-    direction = ENCODER_TABLE[self.state][new_state]
-
-    # Update position (atomic operation)
-    if direction != 0:
-      irq_state = disable_irq()
-      self.position += direction
-      enable_irq(irq_state)
-      self.last_change_ms = now
-
-    self.state = new_state
-
-  def get_delta(self):
-    """Get accumulated position change and reset counter."""
-    irq_state = disable_irq()
-    delta = self.position
-    self.position = 0
-    enable_irq(irq_state)
-    return delta
+        if raw != self.down and time.ticks_diff(now, self._last_change_ms) >= self.debounce_ms:
+            old = self.down
+            self.down = raw
+            if raw and not old:
+                self.pressed = True
+            elif not raw and old:
+                self.released = True
 
 
+# ─── Main ────────────────────────────────────────────────────────────────────
 def main():
-  # LED blink on startup
-  try:
-    led = Pin(21, Pin.OUT)
-    led.on()
-    time.sleep(0.3)
-    led.off()
-  except:
-    led = None
+    # LED blink on startup
+    try:
+        led = Pin(LED_PIN, Pin.OUT)
+        led.on()
+        time.sleep(0.3)
+        led.off()
+    except:
+        led = None
 
-  # Initialize BLE keyboard
-  keyboard = Keyboard(DEVICE_NAME)
-  ks = NVSKeyStore()
-  keyboard.set_keystore(ks)
-  keyboard.start()
-  keyboard.start_advertising()
-  print(f"Advertising as {DEVICE_NAME}")
+    def led_blink(n, on_ms=80, off_ms=80):
+        """Quick LED feedback blinks."""
+        if led is None:
+            return
+        for i in range(n):
+            led.on()
+            time.sleep_ms(on_ms)
+            led.off()
+            if i < n - 1:
+                time.sleep_ms(off_ms)
 
-  # Initialize encoder with debouncing
-  encoder = Encoder(ENCODER_PIN_A, ENCODER_PIN_B, DEBOUNCE_MS)
+    # ── BLE Mouse setup ──────────────────────────────────────────────────────
+    mouse = Mouse(DEVICE_NAME)
+    ks = NVSKeyStore()
+    mouse.set_keystore(ks)
+    mouse.start()
+    mouse.start_advertising()
+    print(f"Advertising as {DEVICE_NAME}")
 
-  was_connected = False
-  last_report_ms = time.ticks_ms()
-  
-  # Non-blocking keystroke state
-  pending_strokes = 0
-  pending_keycode = 0x00
-  is_pressing = False
-  last_keystroke_ms = time.ticks_ms()
-  KEYSTROKE_DELAY_MS = 3  # Tiny delay between press/release state changes
+    # ── Buttons ───────────────────────────────────────────────────────────────
+    btn_a = Button(BUTTON_A_PIN, DEBOUNCE_MS)
+    btn_b = Button(BUTTON_B_PIN, DEBOUNCE_MS)
 
-  while True:
-    is_connected = (keyboard.get_state() == Keyboard.DEVICE_CONNECTED)
+    # ── State ─────────────────────────────────────────────────────────────────
+    mode = MODE_AUTO
+    scroll_axis = AXIS_VERTICAL
+    auto_scroll_dir = 0       # -1 = down/right, +1 = up/left, 0 = stopped
+    hold_scroll_dir = 0       # Same convention, only used in MODE_HOLD
+    was_connected = False
+    last_scroll_ms = time.ticks_ms()
 
-    # Handle connection state changes
-    if is_connected and not was_connected:
-      print("Connected! Ready to send keystrokes.")
-      was_connected = True
-      
-      # Reset state on connect
-      pending_strokes = 0
-      is_pressing = False
+    # Dual-button tracking
+    both_pressed = False
+    both_start_ms = 0
+    both_action_done = False
+    suppress_single = False   # Eat the next single-button release after a dual press
 
-    elif not is_connected and was_connected:
-      print("Disconnected")
-      was_connected = False
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def center_cursor():
+        """Move the mouse cursor to roughly the center of the screen.
+        
+        Since HID mouse reports are relative, we first slam the cursor to the
+        top-left corner with large negative movements, then move it toward
+        the center with positive movements. This ensures the cursor lands
+        over scrollable content so wheel events actually work.
+        """
+        print("Centering cursor...")
+        # Phase 1: Slam to top-left corner (20 × -127 = -2540px per axis)
+        for _ in range(20):
+            mouse.set_axes(-127, -127)
+            mouse.set_wheel(0)
+            mouse.set_pan(0)
+            try:
+                mouse.notify_hid_report()
+            except:
+                pass
+            time.sleep_ms(2)
 
-    # Handle encoder and send keyboard reports
-    if is_connected:
-      now = time.ticks_ms()
+        # Phase 2: Move toward center (6 × 127 = ~762px per axis)
+        for _ in range(6):
+            mouse.set_axes(127, 127)
+            mouse.set_wheel(0)
+            mouse.set_pan(0)
+            try:
+                mouse.notify_hid_report()
+            except:
+                pass
+            time.sleep_ms(2)
 
-      # Read the encoder very frequently without blocking
-      if time.ticks_diff(now, last_report_ms) >= REPORT_INTERVAL_MS:
-        delta = encoder.get_delta()
-        if delta != 0:
-          direction = delta * SCROLL_AMOUNT
-          if INVERT_SCROLL:
-            direction = -direction
+        # Reset axes
+        mouse.set_axes(0, 0)
+        print("Cursor centered")
 
-          # 0x51 = Down Arrow, 0x52 = Up Arrow
-          keycode = 0x52 if direction > 0 else 0x51
-          
-          # If direction changed, flush the queue to feel instantly responsive
-          if keycode != pending_keycode:
-            pending_keycode = keycode
-            pending_strokes = 0
-            if is_pressing:
-              keyboard.set_keys(0x00) # Quick release
-              try: keyboard.notify_hid_report()
-              except: pass
-              is_pressing = False
-              
-          # Add to the queue. Cap it dynamically so it NEVER exceeds ~0.4s of lag
-          # Every stroke takes 2 * KEYSTROKE_DELAY_MS = 6ms. 60 strokes = 360ms maximum catching up.
-          pending_strokes = min(pending_strokes + abs(direction), 60)
+    def send_scroll(direction):
+        """Send one scroll tick. direction: -1 = down/right, +1 = up/left."""
+        amt = direction * SCROLL_AMOUNT
+        if INVERT_SCROLL:
+            amt = -amt
 
-        last_report_ms = now
-
-      # Process the keystroke queue non-blockingly (15ms spacing protects the TX Buffer)
-      if (pending_strokes > 0 or is_pressing) and time.ticks_diff(now, last_keystroke_ms) >= 15:
-        if not is_pressing and pending_strokes > 0:
-          if USE_OPTION_MODIFIER:
-            keyboard.set_modifiers(left_alt=1)
-          keyboard.set_keys(pending_keycode)
-          try: keyboard.notify_hid_report()
-          except: pass
-          is_pressing = True
-          pending_strokes -= 1
+        mouse.set_axes(0, 0)
+        if scroll_axis == AXIS_VERTICAL:
+            mouse.set_wheel(amt)
+            mouse.set_pan(0)
         else:
-          if USE_OPTION_MODIFIER:
-            keyboard.set_modifiers(left_alt=0)
-          keyboard.set_keys(0x00)
-          try: keyboard.notify_hid_report()
-          except: pass
-          is_pressing = False
-          
-        last_keystroke_ms = now
+            mouse.set_wheel(0)
+            mouse.set_pan(-amt)  # Pan positive = scroll right; negate so btn_a = right
+        try:
+            mouse.notify_hid_report()
+        except:
+            pass
+        # Reset relative values
+        mouse.set_wheel(0)
+        mouse.set_pan(0)
 
-    # Handle advertising
-    if keyboard.get_state() == Keyboard.DEVICE_IDLE:
-      keyboard.start_advertising()
-      time.sleep(1)
-    else:
-      time.sleep_ms(1)
+    # ── Main loop ─────────────────────────────────────────────────────────────
+    print("Mode: AUTO | Axis: VERTICAL")
+
+    while True:
+        is_connected = (mouse.get_state() == Mouse.DEVICE_CONNECTED)
+
+        # ── Connection state changes ──────────────────────────────────────────
+        if is_connected and not was_connected:
+            print("Connected!")
+            was_connected = True
+            auto_scroll_dir = 0
+            hold_scroll_dir = 0
+            time.sleep_ms(2500)  # Let iPadOS finish GATT characteristic reads
+            center_cursor()
+        elif not is_connected and was_connected:
+            print("Disconnected")
+            was_connected = False
+            auto_scroll_dir = 0
+            hold_scroll_dir = 0
+
+        if is_connected:
+            now = time.ticks_ms()
+
+            # ── Read buttons ──────────────────────────────────────────────────
+            btn_a.update()
+            btn_b.update()
+
+            # ── Dual-button detection ─────────────────────────────────────────
+            if btn_a.down and btn_b.down:
+                if not both_pressed:
+                    # Both just went down
+                    both_pressed = True
+                    both_start_ms = now
+                    both_action_done = False
+                    # Pause any scrolling while handling gesture
+                    auto_scroll_dir = 0
+                    hold_scroll_dir = 0
+                elif not both_action_done and time.ticks_diff(now, both_start_ms) >= MODE_SWITCH_HOLD_MS:
+                    # Long hold → toggle mode
+                    mode = MODE_HOLD if mode == MODE_AUTO else MODE_AUTO
+                    auto_scroll_dir = 0
+                    hold_scroll_dir = 0
+                    both_action_done = True
+                    mode_name = "HOLD" if mode == MODE_HOLD else "AUTO"
+                    print(f"Mode: {mode_name}")
+                    led_blink(3, 80, 80)
+
+            elif both_pressed:
+                # Was dual-pressed, now one or both released
+                if not both_action_done:
+                    # Short press → toggle axis
+                    scroll_axis = AXIS_HORIZONTAL if scroll_axis == AXIS_VERTICAL else AXIS_VERTICAL
+                    axis_name = "HORIZONTAL" if scroll_axis == AXIS_HORIZONTAL else "VERTICAL"
+                    print(f"Axis: {axis_name}")
+                    led_blink(2, 80, 80)
+                both_pressed = False
+                suppress_single = True  # Don't let the release trigger a scroll action
+
+            else:
+                # ── Single-button logic ───────────────────────────────────────
+                if suppress_single:
+                    # Wait until both buttons are fully released before accepting singles
+                    if not btn_a.down and not btn_b.down:
+                        suppress_single = False
+                else:
+                    if mode == MODE_AUTO:
+                        # Toggle auto-scroll on button release
+                        if btn_a.released:
+                            if auto_scroll_dir == -1:
+                                auto_scroll_dir = 0
+                                print("Auto-scroll stopped")
+                            else:
+                                auto_scroll_dir = -1
+                                last_scroll_ms = now
+                                print("Auto-scroll DOWN" if scroll_axis == AXIS_VERTICAL else "Auto-scroll RIGHT")
+
+                        elif btn_b.released:
+                            if auto_scroll_dir == 1:
+                                auto_scroll_dir = 0
+                                print("Auto-scroll stopped")
+                            else:
+                                auto_scroll_dir = 1
+                                last_scroll_ms = now
+                                print("Auto-scroll UP" if scroll_axis == AXIS_VERTICAL else "Auto-scroll LEFT")
+
+                    elif mode == MODE_HOLD:
+                        # Scroll while held
+                        if btn_a.down and not btn_b.down:
+                            hold_scroll_dir = -1
+                        elif btn_b.down and not btn_a.down:
+                            hold_scroll_dir = 1
+                        else:
+                            hold_scroll_dir = 0
+
+            # ── Send scroll ticks at interval ─────────────────────────────────
+            active_dir = auto_scroll_dir if mode == MODE_AUTO else hold_scroll_dir
+            if active_dir != 0 and time.ticks_diff(now, last_scroll_ms) >= AUTO_SCROLL_INTERVAL_MS:
+                send_scroll(active_dir)
+                last_scroll_ms = now
+
+        # ── Advertising / sleep ───────────────────────────────────────────────
+        if mouse.get_state() == Mouse.DEVICE_IDLE:
+            mouse.start_advertising()
+            time.sleep(1)
+        else:
+            time.sleep_ms(1)
 
 
 if __name__ == "__main__":
-  main()
+    main()

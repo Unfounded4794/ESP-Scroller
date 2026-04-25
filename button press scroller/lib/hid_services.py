@@ -795,6 +795,13 @@ class Mouse(HumanInterfaceDevice):
             0x75, 0x08,                                                                                                 #         Report Size (8)
             0x95, 0x03,                                                                                                 #         Report Count (3)
             0x81, 0x06,                                                                                                 #         Input(Data, Variable, Relative); 3 position bytes (X,Y,Wheel)
+            0x05, 0x0C,                                                                                                 #         Usage Page (Consumer)
+            0x0A, 0x38, 0x02,                                                                                           #         Usage (AC Pan - Horizontal Scroll)
+            0x15, 0x81,                                                                                                 #         Logical Minimum (-127)
+            0x25, 0x7F,                                                                                                 #         Logical Maximum (127)
+            0x75, 0x08,                                                                                                 #         Report Size (8)
+            0x95, 0x01,                                                                                                 #         Report Count (1)
+            0x81, 0x06,                                                                                                 #         Input(Data, Variable, Relative); 1 pan byte (Horizontal Scroll)
             0xc0,                                                                                                       #   END_COLLECTION
             0xc0                                                                                                        # END_COLLECTION
         ]
@@ -804,6 +811,7 @@ class Mouse(HumanInterfaceDevice):
         self.x = 0
         self.y = 0
         self.w = 0
+        self.p = 0  # Horizontal scroll (AC Pan)
 
         self.button1 = 0
         self.button2 = 0
@@ -830,7 +838,7 @@ class Mouse(HumanInterfaceDevice):
         (h_info, h_hid, h_ctrl, self.h_rep, h_d1, h_proto) = handles[3]                                                 # Get the handles for the HIDS characteristics. These correspond directly to self.HIDS. Position 3 because of the order of self.services.
 
         b = self.button1 + self.button2 * 2 + self.button3 * 4
-        state = struct.pack("Bbbb", b, self.x, self.y, self.w)                                                          # Pack the initial mouse state as described by the input report.
+        state = struct.pack("Bbbbb", b, self.x, self.y, self.w, self.p)                                                  # Pack the initial mouse state as described by the input report.
 
         print("Saving HID service characteristics")
         self.characteristics[h_info] = ("HID information", b"\x01\x01\x00\x00")                                         # HID info: ver=1.1, country=0, flags=000000cw with c=normally connectable w=wake up signal
@@ -844,10 +852,10 @@ class Mouse(HumanInterfaceDevice):
     def notify_hid_report(self):
         if self.is_connected():
             b = self.button1 + self.button2 * 2 + self.button3
-            state = struct.pack("Bbbb", b, self.x, self.y, self.w)                                                      # Pack the mouse state as described by the input report.
+            state = struct.pack("Bbbbb", b, self.x, self.y, self.w, self.p)                                              # Pack the mouse state as described by the input report.
             self.characteristics[self.h_rep] = ("HID report", state)
             self._ble.gatts_notify(self.conn_handle, self.h_rep, state)                                                 # Notify client by writing to the report handle.
-            print("Notify with report: ", struct.unpack("Bbbb", state))
+            print("Notify with report: ", struct.unpack("Bbbbb", state))
 
     # Set the mouse axes values.
     def set_axes(self, x=0, y=0):
@@ -872,6 +880,15 @@ class Mouse(HumanInterfaceDevice):
             w = -127
 
         self.w = w
+
+    # Set the mouse horizontal scroll (AC Pan) value.
+    def set_pan(self, p=0):
+        if p > 127:
+            p = 127
+        elif p < -127:
+            p = -127
+
+        self.p = p
 
     # Set the mouse button values.
     def set_buttons(self, b1=0, b2=0, b3=0):
