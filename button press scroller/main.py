@@ -21,10 +21,12 @@ from lib.hid_services import Mouse
 BUTTON_A_PIN = 0              # GPIO0 (D0) - Scroll Down / Right
 BUTTON_B_PIN = 1              # GPIO1 (D1) - Scroll Up / Left
 DEVICE_NAME = "ESP32_Scroller"
-SCROLL_AMOUNT = 1             # Wheel ticks per scroll event (1-5)
+SCROLL_AMOUNT = 1             # Scroll value per tick (1 is minimum, increase for faster)
 INVERT_SCROLL = False         # Flip scroll direction
-AUTO_SCROLL_INTERVAL_MS = 80  # ms between scroll ticks (~12/sec)
-DEBOUNCE_MS = 30              # Button debounce window
+# iPadOS coalesces frequent small ticks into smooth motion. Too slow (>100ms) causes
+# each tick to trigger separate momentum animations that fight each other.
+AUTO_SCROLL_INTERVAL_MS = 100  # ms between scroll ticks (~20/sec, smooth on iOS)
+DEBOUNCE_MS = 50              # Button debounce window
 MODE_SWITCH_HOLD_MS = 3000    # Hold both buttons this long to switch modes
 LED_PIN = 15                  # Onboard LED (XIAO ESP32-C6)
 
@@ -155,25 +157,36 @@ def main():
         print("Cursor centered")
 
     def send_scroll(direction):
-        """Send one scroll tick. direction: -1 = down/right, +1 = up/left."""
+        """Send one scroll tick followed by a zero report.
+        
+        The zero report clears the GATT characteristic so any direct reads
+        by the host don't pick up a stale scroll value (which causes phantom
+        reverse-scroll on iPadOS).
+        """
         amt = direction * SCROLL_AMOUNT
         if INVERT_SCROLL:
             amt = -amt
 
+        # 1) Send the scroll delta
         mouse.set_axes(0, 0)
         if scroll_axis == AXIS_VERTICAL:
             mouse.set_wheel(amt)
             mouse.set_pan(0)
         else:
             mouse.set_wheel(0)
-            mouse.set_pan(-amt)  # Pan positive = scroll right; negate so btn_a = right
+            mouse.set_pan(-amt)
         try:
             mouse.notify_hid_report()
         except:
             pass
-        # Reset relative values
+
+        # 2) Immediately send a zero report to clear the characteristic
         mouse.set_wheel(0)
         mouse.set_pan(0)
+        try:
+            mouse.notify_hid_report()
+        except:
+            pass
 
     # ── Main loop ─────────────────────────────────────────────────────────────
     print("Mode: AUTO | Axis: VERTICAL")
