@@ -1,38 +1,44 @@
 """
-ESP32-C6 Bluetooth Two-Button Scroller
-Uses BLE Mouse HID with wheel (vertical) and AC Pan (horizontal) for
-native smooth scrolling on iPadOS / macOS / Windows.
+ESP32-C6 Bluetooth Two-Button Arrow Keypad
+Uses BLE Keyboard HID arrow keys instead of mouse wheel/pan scrolling.
 
 Two modes:
-  MODE_AUTO  - Press button to start/stop continuous auto-scroll.
-  MODE_HOLD  - Scroll only while button is held down.
+  MODE_AUTO  - Press button to start/stop continuous arrow-key repeats.
+  MODE_HOLD  - Send arrow keys only while button is held down.
 
-Both buttons short press  -> toggle vertical / horizontal scroll axis.
+Both buttons short press  -> toggle vertical / horizontal arrow axis.
 Both buttons held 3 sec   -> switch between MODE_AUTO and MODE_HOLD.
 """
 
 import time
 from machine import Pin
 from lib.hid_keystores import NVSKeyStore
-from lib.hid_services import Mouse
+from lib.hid_services import KeyboardMouse
+
+# USB HID Key Codes for Arrow Keys
+KEY_RIGHT = 0x4F
+KEY_LEFT  = 0x50
+KEY_DOWN  = 0x51
+KEY_UP    = 0x52
 
 
 # ─── Configuration ───────────────────────────────────────────────────────────
-BUTTON_A_PIN = 0              # GPIO0 (D0) - Scroll Down / Right
-BUTTON_B_PIN = 1              # GPIO1 (D1) - Scroll Up / Left
+BUTTON_A_PIN = 1              # GPIO1 (D1) - Arrow Down / Right
+BUTTON_B_PIN = 0              # GPIO0 (D0) - Arrow Up / Left
 DEVICE_NAME = "ESP32_Scroller"
-SCROLL_AMOUNT = 1             # Scroll value per tick (1 is minimum, increase for faster)
-INVERT_SCROLL = False         # Flip scroll direction
-# iPadOS coalesces frequent small ticks into smooth motion. Too slow (>100ms) causes
-# each tick to trigger separate momentum animations that fight each other.
-AUTO_SCROLL_INTERVAL_MS = 100  # ms between scroll ticks (~20/sec, smooth on iOS)
-DEBOUNCE_MS = 50              # Button debounce window
+KEYSTROKES_PER_TICK = 1       # Manual tap presses per repeat tick
+INVERT_ARROWS = False         # Flip arrow direction
+USE_HOST_KEY_REPEAT = True    # Hold keys down so the host repeats like a real keyboard
+KEY_REPEAT_INTERVAL_MS = 10   # ms between manual tap repeat ticks
+KEY_PRESS_MS = 6              # ms to hold each manual tap down
+KEY_RELEASE_MS = 4            # ms between manual taps when sending multiple per tick
+DEBOUNCE_MS = 25              # Button debounce window
 MODE_SWITCH_HOLD_MS = 3000    # Hold both buttons this long to switch modes
 LED_PIN = 15                  # Onboard LED (XIAO ESP32-C6)
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-MODE_AUTO = 0   # Toggle auto-scroll on button press
-MODE_HOLD = 1   # Scroll while button is held
+MODE_AUTO = 0   # Toggle arrow-key repeats on button press
+MODE_HOLD = 1   # Send arrow keys while button is held
 
 AXIS_VERTICAL = 0
 AXIS_HORIZONTAL = 1
@@ -94,12 +100,12 @@ def main():
             if i < n - 1:
                 time.sleep_ms(off_ms)
 
-    # ── BLE Mouse setup ──────────────────────────────────────────────────────
-    mouse = Mouse(DEVICE_NAME)
+    # ── BLE HID setup ──────────────────────────────────────────────────────
+    hid_dev = KeyboardMouse(DEVICE_NAME)
     ks = NVSKeyStore()
-    mouse.set_keystore(ks)
-    mouse.start()
-    mouse.start_advertising()
+    hid_dev.set_keystore(ks)
+    hid_dev.start()
+    hid_dev.start_advertising()
     print(f"Advertising as {DEVICE_NAME}")
 
     # ── Buttons ───────────────────────────────────────────────────────────────
@@ -108,105 +114,128 @@ def main():
 
     # ── State ─────────────────────────────────────────────────────────────────
     mode = MODE_AUTO
-    scroll_axis = AXIS_VERTICAL
-    auto_scroll_dir = 0       # -1 = down/right, +1 = up/left, 0 = stopped
-    hold_scroll_dir = 0       # Same convention, only used in MODE_HOLD
+    arrow_axis = AXIS_VERTICAL
+    auto_key_dir = 0       # -1 = down/right, +1 = up/left, 0 = stopped
+    hold_key_dir = 0       # Same convention, only used in MODE_HOLD
     was_connected = False
-    last_scroll_ms = time.ticks_ms()
+    last_key_ms = time.ticks_ms()
 
     # Dual-button tracking
     both_pressed = False
     both_start_ms = 0
     both_action_done = False
     suppress_single = False   # Eat the next single-button release after a dual press
+    held_key = 0              # Keyboard key currently held in the HID report
 
     # ── Helpers ───────────────────────────────────────────────────────────────
-    def center_cursor():
-        """Move the mouse cursor to roughly the center of the screen.
-        
-        Since HID mouse reports are relative, we first slam the cursor to the
-        top-left corner with large negative movements, then move it toward
-        the center with positive movements. This ensures the cursor lands
-        over scrollable content so wheel events actually work.
+    def _notify_kb():
+        """Send the current keyboard state to the host."""
+        try:
+            hid_dev.notify_hid_report()
+        except:
+            pass
+
+    def _notify_mouse():
+        """Send the current mouse state to the host."""
+        try:
+            hid_dev.notify_mouse_report()
+        except:
+            pass
+
+    def center_and_click():
+        """Center the cursor on screen then click to give focus.
+
+        Phase 1: Slam cursor to top-left with large negative moves.
+        Phase 2: Move toward center with positive moves.
+        Phase 3: Click to give focus to whatever is under the cursor.
         """
         print("Centering cursor...")
-        # Phase 1: Slam to top-left corner (20 × -127 = -2540px per axis)
+        # Phase 1: Slam to top-left corner
         for _ in range(20):
-            mouse.set_axes(-127, -127)
-            mouse.set_wheel(0)
-            mouse.set_pan(0)
-            try:
-                mouse.notify_hid_report()
-            except:
-                pass
-            time.sleep_ms(2)
+            hid_dev.set_mouse_axes(-127, -127)
+            _notify_mouse()
+            time.sleep_ms(3)
 
-        # Phase 2: Move toward center (6 × 127 = ~762px per axis)
+        # Phase 2: Move toward center
         for _ in range(6):
-            mouse.set_axes(127, 127)
-            mouse.set_wheel(0)
-            mouse.set_pan(0)
-            try:
-                mouse.notify_hid_report()
-            except:
-                pass
-            time.sleep_ms(2)
+            hid_dev.set_mouse_axes(127, 127)
+            _notify_mouse()
+            time.sleep_ms(3)
 
-        # Reset axes
-        mouse.set_axes(0, 0)
-        print("Cursor centered")
+        # Reset movement
+        hid_dev.set_mouse_axes(0, 0)
+        _notify_mouse()
+        time.sleep_ms(50)
 
-    def send_scroll(direction):
-        """Send one scroll tick followed by a zero report.
-        
-        The zero report clears the GATT characteristic so any direct reads
-        by the host don't pick up a stale scroll value (which causes phantom
-        reverse-scroll on iPadOS).
-        """
-        amt = direction * SCROLL_AMOUNT
-        if INVERT_SCROLL:
-            amt = -amt
+        # Phase 3: Click to give focus
+        print("Clicking to give focus...")
+        hid_dev.set_mouse_buttons(b1=1)  # Press left button
+        _notify_mouse()
+        time.sleep_ms(50)
+        hid_dev.set_mouse_buttons(b1=0)  # Release left button
+        _notify_mouse()
+        time.sleep_ms(100)
+        print("Ready")
 
-        # 1) Send the scroll delta
-        mouse.set_axes(0, 0)
-        if scroll_axis == AXIS_VERTICAL:
-            mouse.set_wheel(amt)
-            mouse.set_pan(0)
-        else:
-            mouse.set_wheel(0)
-            mouse.set_pan(-amt)
-        try:
-            mouse.notify_hid_report()
-        except:
-            pass
+    def get_arrow_key(direction):
+        """Return the arrow key for the current axis/direction."""
+        dir_val = direction
+        if INVERT_ARROWS:
+            dir_val = -dir_val
 
-        # 2) Immediately send a zero report to clear the characteristic
-        mouse.set_wheel(0)
-        mouse.set_pan(0)
-        try:
-            mouse.notify_hid_report()
-        except:
-            pass
+        if arrow_axis == AXIS_VERTICAL:
+            return KEY_UP if dir_val > 0 else KEY_DOWN
+        return KEY_LEFT if dir_val > 0 else KEY_RIGHT
+
+    def set_held_arrow_key(direction):
+        """Hold one arrow key down, or release all keys when direction is 0."""
+        nonlocal held_key
+
+        key = get_arrow_key(direction) if direction else 0
+        if key == held_key:
+            return
+
+        held_key = key
+        hid_dev.set_keys(key)
+        _notify_kb()
+
+    def send_arrow_key(direction):
+        """Send and release the arrow key for the current axis/direction."""
+        key = get_arrow_key(direction)
+        for _ in range(KEYSTROKES_PER_TICK):
+            hid_dev.set_keys(key)
+            _notify_kb()
+            time.sleep_ms(KEY_PRESS_MS)
+
+            hid_dev.set_keys()  # Release keys
+            _notify_kb()
+
+            if KEYSTROKES_PER_TICK > 1:
+                time.sleep_ms(KEY_RELEASE_MS)
 
     # ── Main loop ─────────────────────────────────────────────────────────────
     print("Mode: AUTO | Axis: VERTICAL")
 
     while True:
-        is_connected = (mouse.get_state() == Mouse.DEVICE_CONNECTED)
+        is_connected = (hid_dev.get_state() == KeyboardMouse.DEVICE_CONNECTED)
 
         # ── Connection state changes ──────────────────────────────────────────
         if is_connected and not was_connected:
             print("Connected!")
             was_connected = True
-            auto_scroll_dir = 0
-            hold_scroll_dir = 0
-            time.sleep_ms(2500)  # Let iPadOS finish GATT characteristic reads
-            center_cursor()
+            auto_key_dir = 0
+            hold_key_dir = 0
+            hid_dev.set_keys()
+            held_key = 0
+            time.sleep_ms(2500)  # Let iPadOS finish GATT discovery
+            center_and_click()
         elif not is_connected and was_connected:
             print("Disconnected")
             was_connected = False
-            auto_scroll_dir = 0
-            hold_scroll_dir = 0
+            auto_key_dir = 0
+            hold_key_dir = 0
+            hid_dev.set_keys()
+            held_key = 0
 
         if is_connected:
             now = time.ticks_ms()
@@ -222,14 +251,14 @@ def main():
                     both_pressed = True
                     both_start_ms = now
                     both_action_done = False
-                    # Pause any scrolling while handling gesture
-                    auto_scroll_dir = 0
-                    hold_scroll_dir = 0
+                    # Pause any arrow-key repeats while handling gesture
+                    auto_key_dir = 0
+                    hold_key_dir = 0
                 elif not both_action_done and time.ticks_diff(now, both_start_ms) >= MODE_SWITCH_HOLD_MS:
                     # Long hold → toggle mode
                     mode = MODE_HOLD if mode == MODE_AUTO else MODE_AUTO
-                    auto_scroll_dir = 0
-                    hold_scroll_dir = 0
+                    auto_key_dir = 0
+                    hold_key_dir = 0
                     both_action_done = True
                     mode_name = "HOLD" if mode == MODE_HOLD else "AUTO"
                     print(f"Mode: {mode_name}")
@@ -239,12 +268,12 @@ def main():
                 # Was dual-pressed, now one or both released
                 if not both_action_done:
                     # Short press → toggle axis
-                    scroll_axis = AXIS_HORIZONTAL if scroll_axis == AXIS_VERTICAL else AXIS_VERTICAL
-                    axis_name = "HORIZONTAL" if scroll_axis == AXIS_HORIZONTAL else "VERTICAL"
+                    arrow_axis = AXIS_HORIZONTAL if arrow_axis == AXIS_VERTICAL else AXIS_VERTICAL
+                    axis_name = "HORIZONTAL" if arrow_axis == AXIS_HORIZONTAL else "VERTICAL"
                     print(f"Axis: {axis_name}")
                     led_blink(2, 80, 80)
                 both_pressed = False
-                suppress_single = True  # Don't let the release trigger a scroll action
+                suppress_single = True  # Don't let the release trigger an arrow action
 
             else:
                 # ── Single-button logic ───────────────────────────────────────
@@ -254,43 +283,49 @@ def main():
                         suppress_single = False
                 else:
                     if mode == MODE_AUTO:
-                        # Toggle auto-scroll on button release
+                        # Toggle arrow-key repeats on button release
                         if btn_a.released:
-                            if auto_scroll_dir == -1:
-                                auto_scroll_dir = 0
-                                print("Auto-scroll stopped")
+                            if auto_key_dir == -1:
+                                auto_key_dir = 0
+                                print("Auto-repeat stopped")
                             else:
-                                auto_scroll_dir = -1
-                                last_scroll_ms = now
-                                print("Auto-scroll DOWN" if scroll_axis == AXIS_VERTICAL else "Auto-scroll RIGHT")
+                                auto_key_dir = -1
+                                last_key_ms = time.ticks_add(now, -KEY_REPEAT_INTERVAL_MS)
+                                print("Auto-repeat DOWN" if arrow_axis == AXIS_VERTICAL else "Auto-repeat RIGHT")
 
                         elif btn_b.released:
-                            if auto_scroll_dir == 1:
-                                auto_scroll_dir = 0
-                                print("Auto-scroll stopped")
+                            if auto_key_dir == 1:
+                                auto_key_dir = 0
+                                print("Auto-repeat stopped")
                             else:
-                                auto_scroll_dir = 1
-                                last_scroll_ms = now
-                                print("Auto-scroll UP" if scroll_axis == AXIS_VERTICAL else "Auto-scroll LEFT")
+                                auto_key_dir = 1
+                                last_key_ms = time.ticks_add(now, -KEY_REPEAT_INTERVAL_MS)
+                                print("Auto-repeat UP" if arrow_axis == AXIS_VERTICAL else "Auto-repeat LEFT")
 
                     elif mode == MODE_HOLD:
-                        # Scroll while held
+                        # Send arrow keys while held
                         if btn_a.down and not btn_b.down:
-                            hold_scroll_dir = -1
+                            hold_key_dir = -1
+                            if btn_a.pressed:
+                                last_key_ms = time.ticks_add(now, -KEY_REPEAT_INTERVAL_MS)
                         elif btn_b.down and not btn_a.down:
-                            hold_scroll_dir = 1
+                            hold_key_dir = 1
+                            if btn_b.pressed:
+                                last_key_ms = time.ticks_add(now, -KEY_REPEAT_INTERVAL_MS)
                         else:
-                            hold_scroll_dir = 0
+                            hold_key_dir = 0
 
-            # ── Send scroll ticks at interval ─────────────────────────────────
-            active_dir = auto_scroll_dir if mode == MODE_AUTO else hold_scroll_dir
-            if active_dir != 0 and time.ticks_diff(now, last_scroll_ms) >= AUTO_SCROLL_INTERVAL_MS:
-                send_scroll(active_dir)
-                last_scroll_ms = now
+            # Send arrow-key output.
+            active_dir = auto_key_dir if mode == MODE_AUTO else hold_key_dir
+            if USE_HOST_KEY_REPEAT:
+                set_held_arrow_key(active_dir)
+            elif active_dir != 0 and time.ticks_diff(now, last_key_ms) >= KEY_REPEAT_INTERVAL_MS:
+                send_arrow_key(active_dir)
+                last_key_ms = now
 
         # ── Advertising / sleep ───────────────────────────────────────────────
-        if mouse.get_state() == Mouse.DEVICE_IDLE:
-            mouse.start_advertising()
+        if hid_dev.get_state() == KeyboardMouse.DEVICE_IDLE:
+            hid_dev.start_advertising()
             time.sleep(1)
         else:
             time.sleep_ms(1)

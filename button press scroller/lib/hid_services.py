@@ -1030,3 +1030,203 @@ class Keyboard(HumanInterfaceDevice):
     # Should take a tuple with the report bytes.
     def set_kb_callback(self, kb_callback):
         self.kb_callback = kb_callback
+
+
+# Class that represents a composite Keyboard + Mouse service.
+class KeyboardMouse(HumanInterfaceDevice):
+    """Composite HID device with Keyboard (Report ID 1) and Mouse (Report ID 2).
+
+    Use keyboard reports for key presses and mouse reports for cursor movement.
+    """
+
+    def __init__(self, name="Bluetooth HID"):
+        super(KeyboardMouse, self).__init__(name)
+        self.device_appearance = 961                                                                                     # 961 = keyboard appearance
+
+        self.HIDS = (
+            UUID(0x1812),                                                                                                # Human Interface Device
+            (
+                (UUID(0x2A4A), F_READ),                                                                                  # HID information
+                (UUID(0x2A4B), F_READ),                                                                                  # HID report map
+                (UUID(0x2A4C), F_READ_WRITE_NORESPONSE),                                                                 # HID control point
+                (UUID(0x2A4D), F_READ_NOTIFY, (                                                                          # HID report - keyboard input (Report ID 1)
+                    (UUID(0x2908), DSC_F_READ),                                                                          # HID reference
+                )),
+                (UUID(0x2A4D), F_READ_WRITE_NOTIFY_NORESPONSE, (                                                         # HID report - keyboard output (Report ID 1)
+                    (UUID(0x2908), DSC_F_READ),                                                                          # HID reference
+                )),
+                (UUID(0x2A4D), F_READ_NOTIFY, (                                                                          # HID report - mouse input (Report ID 2)
+                    (UUID(0x2908), DSC_F_READ),                                                                          # HID reference
+                )),
+                (UUID(0x2A4E), F_READ_WRITE_NORESPONSE),                                                                 # HID protocol mode
+            ),
+        )
+
+        # fmt: off
+        self.HID_INPUT_REPORT = [
+            # ── Report ID 1: Keyboard ─────────────────────────────────────────
+            0x05, 0x01,                                                                                                  # USAGE_PAGE (Generic Desktop)
+            0x09, 0x06,                                                                                                  # USAGE (Keyboard)
+            0xa1, 0x01,                                                                                                  # COLLECTION (Application)
+            0x85, 0x01,                                                                                                  #   REPORT_ID (1)
+            0x75, 0x01,                                                                                                  #   Report Size (1)
+            0x95, 0x08,                                                                                                  #   Report Count (8)
+            0x05, 0x07,                                                                                                  #   Usage Page (Key Codes)
+            0x19, 0xE0,                                                                                                  #   Usage Minimum (224)
+            0x29, 0xE7,                                                                                                  #   Usage Maximum (231)
+            0x15, 0x00,                                                                                                  #   Logical Minimum (0)
+            0x25, 0x01,                                                                                                  #   Logical Maximum (1)
+            0x81, 0x02,                                                                                                  #   Input (Data, Variable, Absolute); Modifier byte
+            0x95, 0x01,                                                                                                  #   Report Count (1)
+            0x75, 0x08,                                                                                                  #   Report Size (8)
+            0x81, 0x01,                                                                                                  #   Input (Constant); Reserved byte
+            0x95, 0x05,                                                                                                  #   Report Count (5)
+            0x75, 0x01,                                                                                                  #   Report Size (1)
+            0x05, 0x08,                                                                                                  #   Usage Page (LEDs)
+            0x19, 0x01,                                                                                                  #   Usage Minimum (1)
+            0x29, 0x05,                                                                                                  #   Usage Maximum (5)
+            0x91, 0x02,                                                                                                  #   Output (Data, Variable, Absolute); LED report
+            0x95, 0x01,                                                                                                  #   Report Count (1)
+            0x75, 0x03,                                                                                                  #   Report Size (3)
+            0x91, 0x01,                                                                                                  #   Output (Constant); LED report padding
+            0x95, 0x06,                                                                                                  #   Report Count (6)
+            0x75, 0x08,                                                                                                  #   Report Size (8)
+            0x15, 0x00,                                                                                                  #   Logical Minimum (0)
+            0x25, 0x65,                                                                                                  #   Logical Maximum (101)
+            0x05, 0x07,                                                                                                  #   Usage Page (Key Codes)
+            0x19, 0x00,                                                                                                  #   Usage Minimum (0)
+            0x29, 0x65,                                                                                                  #   Usage Maximum (101)
+            0x81, 0x00,                                                                                                  #   Input (Data, Array); Key array (6 bytes)
+            0xc0,                                                                                                        # END_COLLECTION
+
+            # ── Report ID 2: Mouse ────────────────────────────────────────────
+            0x05, 0x01,                                                                                                  # USAGE_PAGE (Generic Desktop)
+            0x09, 0x02,                                                                                                  # USAGE (Mouse)
+            0xa1, 0x01,                                                                                                  # COLLECTION (Application)
+            0x85, 0x02,                                                                                                  #   REPORT_ID (2)
+            0x09, 0x01,                                                                                                  #   USAGE (Pointer)
+            0xa1, 0x00,                                                                                                  #   COLLECTION (Physical)
+            0x05, 0x09,                                                                                                  #     Usage Page (Buttons)
+            0x19, 0x01,                                                                                                  #     Usage Minimum (1)
+            0x29, 0x03,                                                                                                  #     Usage Maximum (3)
+            0x15, 0x00,                                                                                                  #     Logical Minimum (0)
+            0x25, 0x01,                                                                                                  #     Logical Maximum (1)
+            0x95, 0x03,                                                                                                  #     Report Count (3)
+            0x75, 0x01,                                                                                                  #     Report Size (1)
+            0x81, 0x02,                                                                                                  #     Input(Data, Variable, Absolute); 3 button bits
+            0x95, 0x01,                                                                                                  #     Report Count(1)
+            0x75, 0x05,                                                                                                  #     Report Size(5)
+            0x81, 0x03,                                                                                                  #     Input(Constant); 5 bit padding
+            0x05, 0x01,                                                                                                  #     Usage Page (Generic Desktop)
+            0x09, 0x30,                                                                                                  #     Usage (X)
+            0x09, 0x31,                                                                                                  #     Usage (Y)
+            0x15, 0x81,                                                                                                  #     Logical Minimum (-127)
+            0x25, 0x7F,                                                                                                  #     Logical Maximum (127)
+            0x75, 0x08,                                                                                                  #     Report Size (8)
+            0x95, 0x02,                                                                                                  #     Report Count (2)
+            0x81, 0x06,                                                                                                  #     Input(Data, Variable, Relative); X, Y
+            0xc0,                                                                                                        #   END_COLLECTION
+            0xc0,                                                                                                        # END_COLLECTION
+        ]
+        # fmt: on
+
+        # Keyboard state
+        self.modifiers = 0
+        self.keypresses = [0x00] * 6
+
+        # Mouse state
+        self.mouse_x = 0
+        self.mouse_y = 0
+        self.mouse_button1 = 0
+        self.mouse_button2 = 0
+        self.mouse_button3 = 0
+
+        self.kb_callback = None
+        self.services.append(self.HIDS)
+
+    # Interrupt request callback function
+    def ble_irq(self, event, data):
+        if event == _IRQ_GATTS_WRITE:
+            conn_handle, attr_handle = data
+            if attr_handle == self.h_repout:
+                report = self._ble.gatts_read(attr_handle)
+                bytes_val = struct.unpack("B", report)
+                if self.kb_callback is not None:
+                    self.kb_callback(bytes_val)
+                return _GATTS_NO_ERROR
+        return super(KeyboardMouse, self).ble_irq(event, data)
+
+    def start(self):
+        super(KeyboardMouse, self).start()
+        print("Registering services")
+        handles = self._ble.gatts_register_services(self.services)
+        self.save_service_characteristics(handles)
+        self.write_service_characteristics()
+        self.adv = Advertiser(self._ble, [UUID(0x1812)], self.device_appearance, self.device_name)
+        print("Server started")
+
+    def save_service_characteristics(self, handles):
+        super(KeyboardMouse, self).save_service_characteristics(handles)
+
+        # Unpack all handles from the HIDS service (position 3 in self.services)
+        (h_info, h_hid, h_ctrl,
+         self.h_rep, h_d1,                                                                                               # Keyboard input report + reference
+         self.h_repout, h_d2,                                                                                            # Keyboard output report + reference
+         self.h_mouse_rep, h_d3,                                                                                         # Mouse input report + reference
+         h_proto) = handles[3]
+
+        kb_state = struct.pack("8B", self.modifiers, 0,
+                               self.keypresses[0], self.keypresses[1], self.keypresses[2],
+                               self.keypresses[3], self.keypresses[4], self.keypresses[5])
+
+        b = self.mouse_button1 + self.mouse_button2 * 2 + self.mouse_button3 * 4
+        mouse_state = struct.pack("Bbb", b, self.mouse_x, self.mouse_y)
+
+        print("Saving HID service characteristics")
+        self.characteristics[h_info] = ("HID information", b"\x01\x01\x00\x00")
+        self.characteristics[h_hid] = ("HID input report map", bytes(self.HID_INPUT_REPORT))
+        self.characteristics[h_ctrl] = ("HID control point", b"\x00")
+        self.characteristics[self.h_rep] = ("HID keyboard report", kb_state)
+        self.characteristics[h_d1] = ("HID kb input reference", struct.pack("<BB", 1, 1))                                # Report ID 1, type input
+        self.characteristics[self.h_repout] = ("HID kb output report", kb_state)
+        self.characteristics[h_d2] = ("HID kb output reference", struct.pack("<BB", 1, 2))                               # Report ID 1, type output
+        self.characteristics[self.h_mouse_rep] = ("HID mouse report", mouse_state)
+        self.characteristics[h_d3] = ("HID mouse input reference", struct.pack("<BB", 2, 1))                             # Report ID 2, type input
+        self.characteristics[h_proto] = ("HID protocol mode", b"\x01")
+
+    # Notify keyboard report (Report ID 1)
+    def notify_hid_report(self):
+        if self.is_connected():
+            state = struct.pack("8B", self.modifiers, 0,
+                                self.keypresses[0], self.keypresses[1], self.keypresses[2],
+                                self.keypresses[3], self.keypresses[4], self.keypresses[5])
+            self.characteristics[self.h_rep] = ("HID keyboard report", state)
+            self._ble.gatts_notify(self.conn_handle, self.h_rep, state)
+
+    # Notify mouse report (Report ID 2)
+    def notify_mouse_report(self):
+        if self.is_connected():
+            b = self.mouse_button1 + self.mouse_button2 * 2 + self.mouse_button3 * 4
+            state = struct.pack("Bbb", b, self.mouse_x, self.mouse_y)
+            self.characteristics[self.h_mouse_rep] = ("HID mouse report", state)
+            self._ble.gatts_notify(self.conn_handle, self.h_mouse_rep, state)
+
+    # ── Keyboard methods ──────────────────────────────────────────────────────
+    def set_modifiers(self, right_gui=0, right_alt=0, right_shift=0, right_control=0, left_gui=0, left_alt=0, left_shift=0, left_control=0):
+        self.modifiers = (right_gui << 7) + (right_alt << 6) + (right_shift << 5) + (right_control << 4) + (left_gui << 3) + (left_alt << 2) + (left_shift << 1) + left_control
+
+    def set_keys(self, k0=0x00, k1=0x00, k2=0x00, k3=0x00, k4=0x00, k5=0x00):
+        self.keypresses = [k0, k1, k2, k3, k4, k5]
+
+    def set_kb_callback(self, kb_callback):
+        self.kb_callback = kb_callback
+
+    # ── Mouse methods ─────────────────────────────────────────────────────────
+    def set_mouse_axes(self, x=0, y=0):
+        self.mouse_x = max(-127, min(127, x))
+        self.mouse_y = max(-127, min(127, y))
+
+    def set_mouse_buttons(self, b1=0, b2=0, b3=0):
+        self.mouse_button1 = b1
+        self.mouse_button2 = b2
+        self.mouse_button3 = b3

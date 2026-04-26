@@ -1,77 +1,53 @@
-# ESP32 Bluetooth Scroll Wheel
+# ESP32 Bluetooth Arrow Key Controller
 
-A Bluetooth HID scroll wheel for iOS/iPadOS using an ESP32-S3 and a rotary encoder.
+A Bluetooth HID controller for iOS/iPadOS, macOS, and Windows using two buttons on an ESP32-C6.
+
+Instead of sending mouse wheel or horizontal pan scroll events, `main.py` sends BLE keyboard arrow-key presses:
+
+- Button A sends Down in vertical mode, Right in horizontal mode.
+- Button B sends Up in vertical mode, Left in horizontal mode.
+- Press both buttons briefly to toggle vertical/horizontal arrow mode.
+- Hold both buttons for 3 seconds to toggle AUTO/HOLD mode.
 
 ## Hardware
 
-- ESP32-S3 board
-- Rotary encoder (mechanical with detents)
-  - Pin A → GPIO 2
-  - Pin B → GPIO 3
-  - GND → GND
+- XIAO ESP32-C6 or compatible ESP32-C6 board running MicroPython
+- Button A wired to GPIO1/D1 and GND
+- Button B wired to GPIO0/D0 and GND
+- Optional onboard LED on GPIO15 for feedback
+
+The button inputs use internal pull-ups, so each button should connect the GPIO pin to GND when pressed.
 
 ## Configuration
 
-All settings are at the top of `main.py`:
+Settings are at the top of `main.py`:
 
-### Pin Configuration
+| Setting                  | Default           | Description |
+| ------------------------ | ----------------- | ----------- |
+| `BUTTON_A_PIN`           | `1`               | GPIO for the Down/Right button |
+| `BUTTON_B_PIN`           | `0`               | GPIO for the Up/Left button |
+| `DEVICE_NAME`            | `"ESP32_Scroller"` | Bluetooth device name shown when pairing |
+| `KEYSTROKES_PER_TICK`    | `1`               | Arrow-key taps sent per tick when `USE_HOST_KEY_REPEAT` is `False` |
+| `INVERT_ARROWS`          | `False`           | Reverse Up/Down and Left/Right behavior |
+| `USE_HOST_KEY_REPEAT`    | `True`            | Hold arrow keys down so the host repeats like a real keyboard |
+| `KEY_REPEAT_INTERVAL_MS` | `10`              | Delay between repeated taps when `USE_HOST_KEY_REPEAT` is `False` |
+| `KEY_PRESS_MS`           | `6`               | How long each manual tap is held down |
+| `KEY_RELEASE_MS`         | `4`               | Delay between manual taps inside one tick |
+| `DEBOUNCE_MS`            | `25`              | Button debounce window |
+| `MODE_SWITCH_HOLD_MS`    | `3000`            | Hold time for switching AUTO/HOLD mode |
 
-| Setting         | Default | Description                    |
-| --------------- | ------- | ------------------------------ |
-| `ENCODER_PIN_A` | `2`     | GPIO pin for encoder channel A |
-| `ENCODER_PIN_B` | `3`     | GPIO pin for encoder channel B |
+## Modes
 
-### Bluetooth
+AUTO mode toggles repeating arrow-key presses when a button is released.
 
-| Setting       | Default            | Description                              |
-| ------------- | ------------------ | ---------------------------------------- |
-| `DEVICE_NAME` | `"ESP32_Scroller"` | Bluetooth device name shown when pairing |
+HOLD mode repeats arrow-key presses only while a button is held.
 
-### Scroll Behavior
-
-| Setting         | Default | Description                                                                           |
-| --------------- | ------- | ------------------------------------------------------------------------------------- |
-| `INVERT_SCROLL` | `True`  | Reverse scroll direction. Set to `False` if scrolling feels backwards.                |
-| `SCROLL_AMOUNT` | `1`     | Scroll distance per encoder detent. Increase for faster scrolling (1-10 recommended). |
-
-### Encoder Tuning
-
-| Setting              | Default | Description                                                                                                                                            |
-| -------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `DEBOUNCE_MS`        | `3`     | Milliseconds to ignore transitions after a valid one. Increase to 5-10 if you see phantom scrolls or jitter. Decrease if slow rotation misses detents. |
-| `REPORT_INTERVAL_MS` | `30`    | How often to send scroll events to the device (ms). Lower = more responsive but more BLE traffic. Higher = smoother but slight lag. Range: 15-50.      |
+With `USE_HOST_KEY_REPEAT = True`, the firmware sends key-down/key-up state changes and lets the connected device handle repeat timing, just like a physical keyboard. Set it to `False` to use the manual tap timing knobs instead.
 
 ## Troubleshooting
 
-### Scrolling works but direction is wrong
+If directions feel backwards, toggle `INVERT_ARROWS`.
 
-- Toggle `INVERT_SCROLL` between `True` and `False`
-- Or swap `ENCODER_PIN_A` and `ENCODER_PIN_B` values
+If repeats are too slow or too fast with `USE_HOST_KEY_REPEAT = True`, adjust the keyboard repeat settings on the connected device. If using manual tap mode, adjust `KEY_REPEAT_INTERVAL_MS`; if a host misses key presses, raise `KEY_PRESS_MS` slightly.
 
-### Missing scroll events (especially when rotating slowly)
-
-- Decrease `DEBOUNCE_MS` to 1 or 2
-- Check encoder wiring and connections
-
-### Phantom scrolls / jitter / double-counting
-
-- Increase `DEBOUNCE_MS` to 5-10
-- Consider adding 0.1µF capacitors between each signal pin and GND (hardware debounce)
-
-### Scrolling feels laggy
-
-- Decrease `REPORT_INTERVAL_MS` to 15-20
-
-### Scrolling is too slow
-
-- Increase `SCROLL_AMOUNT` to 2-5
-
-### Not connecting to iOS
-
-- Forget the device in iOS Settings → Bluetooth, then re-pair
-- Restart the ESP32
-- Check that the LED blinks on startup (indicates code is running)
-
-## iOS Setup
-
-On first connection, the device automatically moves the pointer to trigger iOS AssistiveTouch recognition. This takes ~8 seconds. Wait for "Ready!" in the serial console before using the scroll wheel.
+If a host keeps using an old HID profile, forget/remove `ESP32_Scroller` from Bluetooth settings and pair it again.
