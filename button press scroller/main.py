@@ -113,7 +113,7 @@ def main():
     btn_b = Button(BUTTON_B_PIN, DEBOUNCE_MS)
 
     # ── State ─────────────────────────────────────────────────────────────────
-    mode = MODE_AUTO
+    mode = MODE_HOLD
     arrow_axis = AXIS_VERTICAL
     auto_key_dir = 0       # -1 = down/right, +1 = up/left, 0 = stopped
     hold_key_dir = 0       # Same convention, only used in MODE_HOLD
@@ -214,7 +214,7 @@ def main():
                 time.sleep_ms(KEY_RELEASE_MS)
 
     # ── Main loop ─────────────────────────────────────────────────────────────
-    print("Mode: AUTO | Axis: VERTICAL")
+    print("Mode: HOLD | Axis: VERTICAL")
 
     while True:
         is_connected = (hid_dev.get_state() == KeyboardMouse.DEVICE_CONNECTED)

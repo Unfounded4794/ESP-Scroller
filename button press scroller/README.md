@@ -27,7 +27,7 @@ Settings are at the top of `main.py`:
 | `BUTTON_A_PIN`           | `1`               | GPIO for the Down/Right button |
 | `BUTTON_B_PIN`           | `0`               | GPIO for the Up/Left button |
 | `DEVICE_NAME`            | `"ESP32_Scroller"` | Bluetooth device name shown when pairing |
-| `KEYSTROKES_PER_TICK`    | `1`               | Arrow-key taps sent per tick when `USE_HOST_KEY_REPEAT` is `False` |
+| `KEYSTROKES_PER_TICK`    | `1`               | Arrow-key taps sent per manual repeat tick |
 | `INVERT_ARROWS`          | `False`           | Reverse Up/Down and Left/Right behavior |
 | `USE_HOST_KEY_REPEAT`    | `True`            | Hold arrow keys down so the host repeats like a real keyboard |
 | `KEY_REPEAT_INTERVAL_MS` | `10`              | Delay between repeated taps when `USE_HOST_KEY_REPEAT` is `False` |
@@ -38,16 +38,18 @@ Settings are at the top of `main.py`:
 
 ## Modes
 
+The controller starts in HOLD mode.
+
 AUTO mode toggles repeating arrow-key presses when a button is released.
 
 HOLD mode repeats arrow-key presses only while a button is held.
 
-With `USE_HOST_KEY_REPEAT = True`, the firmware sends key-down/key-up state changes and lets the connected device handle repeat timing, just like a physical keyboard. Set it to `False` to use the manual tap timing knobs instead.
+With `USE_HOST_KEY_REPEAT = True`, both AUTO and HOLD mode send key-down/key-up state changes and let the connected device handle repeat timing, just like a physical keyboard.
 
 ## Troubleshooting
 
 If directions feel backwards, toggle `INVERT_ARROWS`.
 
-If repeats are too slow or too fast with `USE_HOST_KEY_REPEAT = True`, adjust the keyboard repeat settings on the connected device. If using manual tap mode, adjust `KEY_REPEAT_INTERVAL_MS`; if a host misses key presses, raise `KEY_PRESS_MS` slightly.
+If repeats are too slow or too fast with `USE_HOST_KEY_REPEAT = True`, adjust the keyboard repeat settings on the connected device. Firmware cannot slow AUTO mode separately while it is literally holding the key down.
 
 If a host keeps using an old HID profile, forget/remove `ESP32_Scroller` from Bluetooth settings and pair it again.
