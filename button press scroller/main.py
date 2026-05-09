@@ -185,7 +185,7 @@ def main():
 
         if arrow_axis == AXIS_VERTICAL:
             return KEY_UP if dir_val > 0 else KEY_DOWN
-        return KEY_LEFT if dir_val > 0 else KEY_RIGHT
+        return KEY_RIGHT if dir_val > 0 else KEY_LEFT
 
     def set_held_arrow_key(direction):
         """Hold one arrow key down, or release all keys when direction is 0."""
@@ -291,7 +291,7 @@ def main():
                             else:
                                 auto_key_dir = -1
                                 last_key_ms = time.ticks_add(now, -KEY_REPEAT_INTERVAL_MS)
-                                print("Auto-repeat DOWN" if arrow_axis == AXIS_VERTICAL else "Auto-repeat RIGHT")
+                                print("Auto-repeat DOWN" if arrow_axis == AXIS_VERTICAL else "Auto-repeat LEFT")
 
                         elif btn_b.released:
                             if auto_key_dir == 1:
