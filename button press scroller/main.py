@@ -25,7 +25,7 @@ KEY_UP    = 0x52
 # ─── Configuration ───────────────────────────────────────────────────────────
 BUTTON_A_PIN = 1              # GPIO1 (D1) - Arrow Down / Right
 BUTTON_B_PIN = 0              # GPIO0 (D0) - Arrow Up / Left
-DEVICE_NAME = "ESP32_Scroller"
+DEVICE_NAME = "ESP32_Scroller_V2"
 KEYSTROKES_PER_TICK = 1       # Manual tap presses per repeat tick
 INVERT_ARROWS = False         # Flip arrow direction
 USE_HOST_KEY_REPEAT = True    # Hold keys down so the host repeats like a real keyboard
@@ -114,7 +114,8 @@ def main():
 
     # ── State ─────────────────────────────────────────────────────────────────
     mode = MODE_HOLD
-    arrow_axis = AXIS_VERTICAL
+    # Change default direction
+    arrow_axis = AXIS_HORIZONTAL
     auto_key_dir = 0       # -1 = down/right, +1 = up/left, 0 = stopped
     hold_key_dir = 0       # Same convention, only used in MODE_HOLD
     was_connected = False
